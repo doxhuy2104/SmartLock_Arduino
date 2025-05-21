@@ -9,6 +9,7 @@
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <Preferences.h>
 
 
 //Oled
@@ -40,6 +41,7 @@
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
+#define MAX_CARDS 10
 //
 bool isDone = false;
 
@@ -48,16 +50,20 @@ int count = 0;
 String input = "";
 int tryCount = 5;
 int lockState = 1;
+bool addCard = false;
 
 String PIN = "2104";
-
+String newCardID = "";
+String newCardName = "";
 byte nuidPICC[4];
 
-byte listRFID[][4] = {
-  { 0x94, 0x64, 0x0F, 0x02 }
-};
+// byte listRFID[][4] = {
+//   { 0x94, 0x64, 0x0F, 0x02 }
+// };
 
-int numCards = sizeof(listRFID) / sizeof(listRFID[0]);
+byte listRFID[MAX_CARDS][4];
+int numCards = 0;
+
 
 MFRC522 rfid(SS_PIN, RST_PIN);  // Instance of the class
 
@@ -91,6 +97,9 @@ String WIFI_PASSWORD = "";
 String uid = "";
 String id = "";
 
+//Preferences
+Preferences preferences;
+
 //CallBacks function of bluetooth
 class MyCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
@@ -108,6 +117,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         }
         Serial.print("WIFI_SSID: ");
         Serial.println(WIFI_SSID);
+        preferences.putString("ssid", WIFI_SSID);
       } else if (value[0] == 'p') {
         for (int i = 1; i < value.length(); i++) {
           WIFI_PASSWORD += value[i];
@@ -115,6 +125,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         Serial.print("WIFI_PASSWORD: ");
         Serial.println(WIFI_PASSWORD);
         WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        preferences.putString("password", WIFI_PASSWORD);
         Serial.print("Connecting to Wi-Fi");
         int count = 0;
         while (WiFi.status() != WL_CONNECTED) {
@@ -127,6 +138,8 @@ class MyCallbacks : public BLECharacteristicCallbacks {
             pCharacteristic->notify();
             WIFI_SSID.clear();
             WIFI_PASSWORD.clear();
+            preferences.putString("ssid", "");
+            preferences.putString("password", "");
             return;
           }
         }
@@ -142,15 +155,16 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         }
         Serial.print("uid: ");
         Serial.println(uid);
-      } else if (value[0] == 'i') {
-        for (int i = 1; i < value.length(); i++) {
+        preferences.putString("uid", uid);
+      } else if (value[0] == '-') {
+        for (int i = 0; i < value.length(); i++) {
           id += value[i];
         }
         Serial.print("id: ");
         Serial.println(id);
+        preferences.putString("id", id);
         pCharacteristic->setValue("Done");
         pCharacteristic->notify();
-        BLEDevice::deinit();
         isDone = true;
       }
     }
@@ -166,6 +180,70 @@ void setup() {
     Serial.println("Không tìm thấy màn hình OLED");
     while (true)
       ;
+  }
+
+  preferences.begin("lock-config", false);
+  preferences.begin()
+
+  WIFI_SSID = preferences.getString("ssid", "");
+  WIFI_PASSWORD = preferences.getString("password", "");
+  uid = preferences.getString("uid", "");
+  id = preferences.getString("id", "");
+  numCards = preferences.getInt("num_cards", 0);
+    if (numCards > 0 && numCards <= MAX_CARDS) {
+      preferences.getBytes("card_list", listRFID, numCards * 4);
+      Serial.println("Khôi phục danh sách thẻ từ Preferences:");
+      for (int i = 0; i < numCards; i++) {
+        Serial.print("Thẻ ");
+        Serial.print(i + 1);
+        Serial.print(": ");
+        printHex(listRFID[i], 4);
+        Serial.println();
+      }
+    }
+
+  if (WIFI_SSID != "" && WIFI_PASSWORD != "" && uid != "" && id != "") {
+    Serial.println("Khôi phục thông tin từ bộ nhớ:");
+    Serial.print("SSID: ");
+    Serial.println(WIFI_SSID);
+    Serial.print("Password: ");
+    Serial.println(WIFI_PASSWORD);
+    Serial.print("UID: ");
+    Serial.println(uid);
+    Serial.print("ID: ");
+    Serial.println(id);
+
+    // Kết nối WiFi với thông tin đã lưu
+    WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
+    Serial.print("Connecting to Wi-Fi");
+    int count = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+      Serial.print(".");
+      delay(500);
+      count++;
+      // if (count >= 18) {
+      //   Serial.println("Kết nối WiFi thất bại, chờ thông tin mới");
+      //   WiFi.disconnect(true);
+      //   // Xóa thông tin đã lưu để yêu cầu nhập lại
+      //   preferences.putString("ssid", "");
+      //   preferences.putString("password", "");
+      //   preferences.putString("uid", "");
+      //   preferences.putString("id", "");
+      //   WIFI_SSID.clear();
+      //   WIFI_PASSWORD.clear();
+      //   uid.clear();
+      //   id.clear();
+      //   break;
+      // }
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println();
+      Serial.print("Connected with IP: ");
+      Serial.println(WiFi.localIP());
+      isDone = true; // Kết nối thành công, bỏ qua chờ Bluetooth
+    }
+  } else {
+    Serial.println("Không tìm thấy thông tin đầy đủ trong bộ nhớ");
   }
 
   //bluetooth
@@ -277,6 +355,43 @@ void readRFID() {
       nuidPICC[i] = rfid.uid.uidByte[i];
     }
 
+    if (addCard) {
+      newCardID = "";
+      for (byte i = 0; i < 4; i++) {
+        char hex[3];
+        sprintf(hex, "%02X", rfid.uid.uidByte[i]);
+        newCardID += hex;
+      }
+      if (Firebase.RTDB.setString(&fbdo, uid + "/" + id + "/cards/" + newCardID, newCardName)) {
+        Firebase.RTDB.set(&fbdo, uid + "/" + id + "/cards/add", "0");
+        addCard = false;
+        //add to listRFID
+        if (numCards < MAX_CARDS) {
+          byte cardID[4];
+          if (hexStringToByteArray(newCardID, cardID)) {
+            memcpy(listRFID[numCards], cardID, 4);
+            numCards++;
+            preferences.putBytes("card_list", listRFID, numCards * 4);
+            preferences.putInt("num_cards", numCards);
+            Serial.print("Đã thêm thẻ: ");
+            Serial.println(newCardID);
+          } else {
+            Serial.println("Lỗi: ID thẻ không hợp lệ");
+          }
+        } else {
+          Serial.println("Lỗi: Danh sách thẻ đã đầy");
+        }
+        oledDisplay("Them the thanh cong!");
+        delay(2000);
+        mainScreen();
+      }else {
+        Serial.println("Lỗi thêm thẻ: " + fbdo.errorReason());
+        oledDisplay("Loi them the!");
+        delay(2000);
+        mainScreen();
+      }
+    }
+
     Serial.println(F("The NUID tag is:"));
     Serial.print(F("In hex: "));
     printHex(rfid.uid.uidByte, rfid.uid.size);
@@ -296,7 +411,7 @@ void readRFID() {
   //   display.print(rfid.uid.uidByte[i], HEX);
   //   display.print(" ");
   // }
-  if (check(rfid.uid.uidByte)) {
+  if (!addCard &&check(rfid.uid.uidByte)) {
     Serial.println(F("Thẻ hợp lệ!"));
 
     oledDisplay("Mo khoa thanh cong!");
@@ -310,7 +425,7 @@ void readRFID() {
     display.setCursor(20, 18);
     display.print("Nhap mat khau");
     display.display();
-  } else {
+  } else if (!addCard)  {
     oledDisplay("The sai!");
     delay(2000);
     mainScreen();
@@ -369,6 +484,8 @@ void enterPIN() {
   }
 }
 
+
+
 void getFirebaseData() {
   if (Firebase.ready() && (millis() - sendDataPrevMillis > 1000 || sendDataPrevMillis == 0)) {
     sendDataPrevMillis = millis();
@@ -384,10 +501,28 @@ void getFirebaseData() {
     } else {
       Serial.println(fbdo.errorReason().c_str());
     }
-    if (Firebase.RTDB.get(&fbdo, "XTYv2rwFJ3ZV6390OIJBlmzZSSk1/lock1/PIN")) {
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/PIN")) {
       PIN = fbdo.stringData();
     }
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/cards/add")) {
+
+      if (fbdo.stringData() != "0") {
+        newCardName = fbdo.stringData();
+        oledDisplay("Quet the de them");
+        addCard = true;
+      }
+    }
   }
+}
+
+//RFID
+bool hexStringToByteArray(String hexStr, byte *byteArray) {
+  // if (hexStr.length() != 8) return false;
+  for (int i = 0; i < 4; i++) {
+    String byteStr = hexStr.substring(i * 2, i * 2 + 2);
+    byteArray[i] = (byte)strtol(byteStr.c_str(), NULL, 16);
+  }
+  return true;
 }
 
 void printHex(byte *buffer, byte bufferSize) {
