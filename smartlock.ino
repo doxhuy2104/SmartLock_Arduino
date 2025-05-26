@@ -11,7 +11,6 @@
 #include <BLEServer.h>
 #include <Preferences.h>
 
-
 //Oled
 #define SS_PIN 5
 #define RST_PIN 2
@@ -51,6 +50,7 @@ String input = "";
 int tryCount = 5;
 int lockState = 1;
 bool addCard = false;
+bool isCheckWifi = true;
 
 String PIN = "2104";
 String newCardID = "";
@@ -156,16 +156,75 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         Serial.print("uid: ");
         Serial.println(uid);
         preferences.putString("uid", uid);
-      } else if (value[0] == '-') {
-        for (int i = 0; i < value.length(); i++) {
-          id += value[i];
-        }
-        Serial.print("id: ");
-        Serial.println(id);
-        preferences.putString("id", id);
         pCharacteristic->setValue("Done");
         pCharacteristic->notify();
         isDone = true;
+      }
+      //  else if (value[0] == '-') {
+      //   for (int i = 0; i < value.length(); i++) {
+      //     id += value[i];
+      //   }
+      //   Serial.print("id: ");
+      //   Serial.println(id);
+      //   preferences.putString("id", id);
+
+      //   pCharacteristic->setValue("Done");
+      //   pCharacteristic->notify();
+      //   BLEDevice::deinit(true);
+      //   isDone = true;
+      // }
+    }
+  }
+};
+
+class MyCallbacks2 : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    String value = pCharacteristic->getValue();
+    if (value.length() > 0) {
+      String received = "";
+      for (int i = 0; i < value.length(); i++) {
+        received += value[i];
+      }
+      Serial.print("received: ");
+      Serial.println(received);
+      if (value[0] == 'n') {
+        for (int i = 1; i < value.length(); i++) {
+          WIFI_SSID += value[i];
+        }
+        Serial.print("WIFI_SSID: ");
+        Serial.println(WIFI_SSID);
+        preferences.putString("ssid", WIFI_SSID);
+      } else if (value[0] == 'p') {
+        for (int i = 1; i < value.length(); i++) {
+          WIFI_PASSWORD += value[i];
+        }
+        Serial.print("WIFI_PASSWORD: ");
+        Serial.println(WIFI_PASSWORD);
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        preferences.putString("password", WIFI_PASSWORD);
+        Serial.print("Connecting to Wi-Fi");
+        int count = 0;
+        while (WiFi.status() != WL_CONNECTED) {
+          Serial.print(".");
+          delay(500);
+          count++;
+          if (count >= 18) {
+            WiFi.disconnect(true);
+            pCharacteristic->setValue("WIFI_FAILED");
+            pCharacteristic->notify();
+            WIFI_SSID.clear();
+            WIFI_PASSWORD.clear();
+            preferences.putString("ssid", "");
+            preferences.putString("password", "");
+            return;
+          }
+        }
+        Serial.println();
+        Serial.print("Connected with IP: ");
+        Serial.println(WiFi.localIP());
+        Serial.println();
+        pCharacteristic->setValue("Connected");
+        pCharacteristic->notify();
       }
     }
   }
@@ -182,27 +241,28 @@ void setup() {
       ;
   }
 
-  preferences.begin("lock-config", false);
-  preferences.begin()
+  Serial.println(WiFi.macAddress());
 
-  WIFI_SSID = preferences.getString("ssid", "");
+  preferences.begin("lock-config", false);
+
+    WIFI_SSID = preferences.getString("ssid", "");
   WIFI_PASSWORD = preferences.getString("password", "");
   uid = preferences.getString("uid", "");
-  id = preferences.getString("id", "");
+  // id = preferences.getString("id", "");
   numCards = preferences.getInt("num_cards", 0);
-    if (numCards > 0 && numCards <= MAX_CARDS) {
-      preferences.getBytes("card_list", listRFID, numCards * 4);
-      Serial.println("Khôi phục danh sách thẻ từ Preferences:");
-      for (int i = 0; i < numCards; i++) {
-        Serial.print("Thẻ ");
-        Serial.print(i + 1);
-        Serial.print(": ");
-        printHex(listRFID[i], 4);
-        Serial.println();
-      }
+  if (numCards > 0 && numCards <= MAX_CARDS) {
+    preferences.getBytes("card_list", listRFID, numCards * 4);
+    Serial.println("Khôi phục danh sách thẻ từ Preferences:");
+    for (int i = 0; i < numCards; i++) {
+      Serial.print("Thẻ ");
+      Serial.print(i + 1);
+      Serial.print(": ");
+      printHex(listRFID[i], 4);
+      Serial.println();
     }
+  }
 
-  if (WIFI_SSID != "" && WIFI_PASSWORD != "" && uid != "" && id != "") {
+  if (WIFI_SSID != "" && WIFI_PASSWORD != "" && uid != "") {
     Serial.println("Khôi phục thông tin từ bộ nhớ:");
     Serial.print("SSID: ");
     Serial.println(WIFI_SSID);
@@ -210,8 +270,8 @@ void setup() {
     Serial.println(WIFI_PASSWORD);
     Serial.print("UID: ");
     Serial.println(uid);
-    Serial.print("ID: ");
-    Serial.println(id);
+    // Serial.print("ID: ");
+    // Serial.println(id);
 
     // Kết nối WiFi với thông tin đã lưu
     WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
@@ -240,14 +300,17 @@ void setup() {
       Serial.println();
       Serial.print("Connected with IP: ");
       Serial.println(WiFi.localIP());
-      isDone = true; // Kết nối thành công, bỏ qua chờ Bluetooth
+      isDone = true;
     }
   } else {
     Serial.println("Không tìm thấy thông tin đầy đủ trong bộ nhớ");
   }
-
+if (WIFI_SSID == "" && WIFI_PASSWORD == "" && uid == ""){
   //bluetooth
   BLEDevice::init("My Lock");
+  BLEAddress bleAddress = BLEDevice::getAddress();
+  id =bleAddress.toString();
+  id.toUpperCase();
   BLEServer *pServer = BLEDevice::createServer();
 
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -263,20 +326,24 @@ void setup() {
   BLEAdvertising *pAdvertising = pServer->getAdvertising();
   pAdvertising->start();
 
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, HIGH);
 
-  display.clearDisplay();
+  // pinMode(RELAY_PIN, OUTPUT);
+  // digitalWrite(RELAY_PIN, HIGH);
+
+ 
+  while (!isDone) {
+    delay(100);
+  }
+  delay(5000);
+  BLEDevice::deinit(true);
+}
+ display.clearDisplay();
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(20, 18);
   display.print("Nhap mat khau");
   display.display();
-  while (!isDone) {
-    delay(100);
-  }
-
 
   /* Assign the api key (required) */
   config.api_key = API_KEY;
@@ -309,6 +376,9 @@ void loop() {
   readRFID();
   enterPIN();
   getFirebaseData();
+  if(isCheckWifi){
+    checkWifi();
+  }
 }
 
 void oledDisplay(const char *text) {
@@ -384,7 +454,7 @@ void readRFID() {
         oledDisplay("Them the thanh cong!");
         delay(2000);
         mainScreen();
-      }else {
+      } else {
         Serial.println("Lỗi thêm thẻ: " + fbdo.errorReason());
         oledDisplay("Loi them the!");
         delay(2000);
@@ -411,7 +481,7 @@ void readRFID() {
   //   display.print(rfid.uid.uidByte[i], HEX);
   //   display.print(" ");
   // }
-  if (!addCard &&check(rfid.uid.uidByte)) {
+  if (!addCard && check(rfid.uid.uidByte)) {
     Serial.println(F("Thẻ hợp lệ!"));
 
     oledDisplay("Mo khoa thanh cong!");
@@ -425,7 +495,7 @@ void readRFID() {
     display.setCursor(20, 18);
     display.print("Nhap mat khau");
     display.display();
-  } else if (!addCard)  {
+  } else if (!addCard) {
     oledDisplay("The sai!");
     delay(2000);
     mainScreen();
@@ -501,10 +571,10 @@ void getFirebaseData() {
     } else {
       Serial.println(fbdo.errorReason().c_str());
     }
-    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/PIN")) {
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id+ "/PIN")) {
       PIN = fbdo.stringData();
     }
-    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/cards/add")) {
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id+ "/cards/add")) {
 
       if (fbdo.stringData() != "0") {
         newCardName = fbdo.stringData();
@@ -549,4 +619,30 @@ bool check(byte *id) {
     }
   }
   return false;
+}
+
+void checkWifi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    isCheckWifi = false;
+    Serial.println();
+    Serial.print("Connected with IP: ");
+    Serial.println(WiFi.localIP());
+    isDone = false;
+
+    BLEDevice::init("My Lock");
+    BLEServer *pServer = BLEDevice::createServer();
+
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+
+    BLECharacteristic *pCharacteristic =
+      pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+
+    pCharacteristic->setCallbacks(new MyCallbacks2());
+
+    pCharacteristic->setValue("Hello World");
+    pService->start();
+
+    BLEAdvertising *pAdvertising = pServer->getAdvertising();
+    pAdvertising->start();
+  }
 }
