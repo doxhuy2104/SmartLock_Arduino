@@ -51,11 +51,13 @@ int tryCount = 5;
 int lockState = 1;
 bool addCard = false;
 bool isCheckWifi = true;
-
 String PIN = "2104";
 String newCardID = "";
 String newCardName = "";
 byte nuidPICC[4];
+bool block = false;
+unsigned long prevMillis = 0;
+unsigned long lastFirebase = 0;
 
 // byte listRFID[][4] = {
 //   { 0x94, 0x64, 0x0F, 0x02 }
@@ -225,6 +227,7 @@ class MyCallbacks2 : public BLECharacteristicCallbacks {
         Serial.println();
         pCharacteristic->setValue("Connected");
         pCharacteristic->notify();
+        isCheckWifi = true;
       }
     }
   }
@@ -245,10 +248,10 @@ void setup() {
 
   preferences.begin("lock-config", false);
 
-    WIFI_SSID = preferences.getString("ssid", "");
+  WIFI_SSID = preferences.getString("ssid", "");
   WIFI_PASSWORD = preferences.getString("password", "");
   uid = preferences.getString("uid", "");
-  // id = preferences.getString("id", "");
+  id = preferences.getString("id", "");
   numCards = preferences.getInt("num_cards", 0);
   if (numCards > 0 && numCards <= MAX_CARDS) {
     preferences.getBytes("card_list", listRFID, numCards * 4);
@@ -262,7 +265,7 @@ void setup() {
     }
   }
 
-  if (WIFI_SSID != "" && WIFI_PASSWORD != "" && uid != "") {
+  if (WIFI_SSID != "" && WIFI_PASSWORD != "" && uid != "" && id != "") {
     Serial.println("Khôi phục thông tin từ bộ nhớ:");
     Serial.print("SSID: ");
     Serial.println(WIFI_SSID);
@@ -270,8 +273,8 @@ void setup() {
     Serial.println(WIFI_PASSWORD);
     Serial.print("UID: ");
     Serial.println(uid);
-    // Serial.print("ID: ");
-    // Serial.println(id);
+    Serial.print("ID: ");
+    Serial.println(id);
 
     // Kết nối WiFi với thông tin đã lưu
     WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
@@ -305,39 +308,40 @@ void setup() {
   } else {
     Serial.println("Không tìm thấy thông tin đầy đủ trong bộ nhớ");
   }
-if (WIFI_SSID == "" && WIFI_PASSWORD == "" && uid == ""){
-  //bluetooth
-  BLEDevice::init("My Lock");
-  BLEAddress bleAddress = BLEDevice::getAddress();
-  id =bleAddress.toString();
-  id.toUpperCase();
-  BLEServer *pServer = BLEDevice::createServer();
+  if (WIFI_SSID == "" && WIFI_PASSWORD == "" && uid == "") {
+    //bluetooth
+    BLEDevice::init("My Lock");
+    BLEAddress bleAddress = BLEDevice::getAddress();
+    id = bleAddress.toString();
+    id.toUpperCase();
+    preferences.putString("id", id);
+    BLEServer *pServer = BLEDevice::createServer();
 
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+    BLEService *pService = pServer->createService(SERVICE_UUID);
 
-  BLECharacteristic *pCharacteristic =
-    pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
+    BLECharacteristic *pCharacteristic =
+      pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE);
 
-  pCharacteristic->setCallbacks(new MyCallbacks());
+    pCharacteristic->setCallbacks(new MyCallbacks());
 
-  pCharacteristic->setValue("Hello World");
-  pService->start();
+    pCharacteristic->setValue("Hello World");
+    pService->start();
 
-  BLEAdvertising *pAdvertising = pServer->getAdvertising();
-  pAdvertising->start();
+    BLEAdvertising *pAdvertising = pServer->getAdvertising();
+    pAdvertising->start();
 
 
-  // pinMode(RELAY_PIN, OUTPUT);
-  // digitalWrite(RELAY_PIN, HIGH);
+    // pinMode(RELAY_PIN, OUTPUT);
+    // digitalWrite(RELAY_PIN, HIGH);
 
- 
-  while (!isDone) {
-    delay(100);
+
+    while (!isDone) {
+      delay(100);
+    }
+    delay(5000);
+    BLEDevice::deinit(true);
   }
-  delay(5000);
-  BLEDevice::deinit(true);
-}
- display.clearDisplay();
+  display.clearDisplay();
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -374,9 +378,16 @@ if (WIFI_SSID == "" && WIFI_PASSWORD == "" && uid == ""){
 
 void loop() {
   readRFID();
-  enterPIN();
+  if(!block)
+    enterPIN();
+  else{
+    if(millis()-prevMillis>=30000){
+      block=false;
+    }
+  }
+
   getFirebaseData();
-  if(isCheckWifi){
+  if (isCheckWifi) {
     checkWifi();
   }
 }
@@ -483,7 +494,7 @@ void readRFID() {
   // }
   if (!addCard && check(rfid.uid.uidByte)) {
     Serial.println(F("Thẻ hợp lệ!"));
-
+ 
     oledDisplay("Mo khoa thanh cong!");
     tryCount = 5;
     input = "";
@@ -519,7 +530,6 @@ void readRFID() {
 
 void enterPIN() {
   char customKey = customKeypad.getKey();
-
   if (customKey) {
     if (count == 0) {
       display.clearDisplay();
@@ -546,7 +556,8 @@ void enterPIN() {
         oledDisplay("Sai mat khau");
         oledDisplay(("Ban con " + String(tryCount) + " lan thu").c_str());
         if (tryCount == 0) {
-          delay(300000);
+          block = true;
+          prevMillis=millis();
           tryCount = 5;
         }
       }
@@ -554,7 +565,38 @@ void enterPIN() {
   }
 }
 
+void removeCard(String hexUID) {
+  byte uid[4];
+  
+  for (int i = 0; i < 4; i++) {
+    String byteString = hexUID.substring(i * 2, i * 2 + 2);
+    uid[i] = strtoul(byteString.c_str(), NULL, 16);
+  }
 
+  for (int i = 0; i < MAX_CARDS; i++) {
+    bool match = true;
+    for (int j = 0; j < 4; j++) {
+      if (listRFID[i][j] != uid[j]) {
+        match = false;
+        break;
+      }
+    }
+
+    if (match) {
+      for (int k = i; k < MAX_CARDS - 1; k++) {
+        for (int j = 0; j < 4; j++) {
+          listRFID[k][j] = listRFID[k + 1][j];
+        }
+      }
+      for (int j = 0; j < 4; j++) {
+        listRFID[MAX_CARDS - 1][j] = 0;
+      }
+
+      // Serial.println("Thẻ đã được xóa khỏi danh sách.");
+      break;
+    }
+  }
+}
 
 void getFirebaseData() {
   if (Firebase.ready() && (millis() - sendDataPrevMillis > 1000 || sendDataPrevMillis == 0)) {
@@ -562,6 +604,7 @@ void getFirebaseData() {
 
     if (Firebase.RTDB.getInt(&fbdo, uid + "/" + id + "/state", &lockState)) {
       if (!lockState) {
+        block=false;
         oledDisplay("Mo khoa thanh cong!");
         delay(5000);
         mainScreen();
@@ -571,15 +614,20 @@ void getFirebaseData() {
     } else {
       Serial.println(fbdo.errorReason().c_str());
     }
-    if (Firebase.RTDB.get(&fbdo, uid + "/" + id+ "/PIN")) {
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/PIN")) {
       PIN = fbdo.stringData();
     }
-    if (Firebase.RTDB.get(&fbdo, uid + "/" + id+ "/cards/add")) {
-
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/cards/add")) {
       if (fbdo.stringData() != "0") {
         newCardName = fbdo.stringData();
         oledDisplay("Quet the de them");
         addCard = true;
+      }
+    }
+    if (Firebase.RTDB.get(&fbdo, uid + "/" + id + "/cards/remove")) {
+
+      if (fbdo.stringData() != "0") {
+        removeCard(fbdo.stringData());
       }
     }
   }
@@ -623,13 +671,20 @@ bool check(byte *id) {
 
 void checkWifi() {
   if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    
     isCheckWifi = false;
-    Serial.println();
-    Serial.print("Connected with IP: ");
-    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.status());
+    // Serial.print("Connected with IP: ");
+    // Serial.println(WiFi.localIP());
     isDone = false;
 
+
     BLEDevice::init("My Lock");
+    BLEAddress bleAddress = BLEDevice::getAddress();
+    Serial.println(bleAddress.toString());
+
     BLEServer *pServer = BLEDevice::createServer();
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -644,5 +699,14 @@ void checkWifi() {
 
     BLEAdvertising *pAdvertising = pServer->getAdvertising();
     pAdvertising->start();
+
+    WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
+    Serial.print("Connecting to Wi-Fi");
+    while(WiFi.status() != WL_CONNECTED){
+      readRFID();
+      enterPIN();
+    }
+    delay(2000);
+    BLEDevice::deinit();
   }
 }
